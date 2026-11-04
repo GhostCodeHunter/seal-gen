@@ -17,6 +17,7 @@ Everything runs in the browser. Nothing is uploaded.
 - Show or hide stars and other symbols
 - Colour filters: Original, Cool, Warm, Vivid, Muted, Mono (colour only)
 - Five ink colours
+- Stamp finish: Clean, Fresh ink, Rubber stamp or Worn stamp. It gives the ink the uneven density, slightly ragged edges and tiny gaps of a real stamp impression. It is seeded, so the preview and every download show the same impression, and the PROOF mark is drawn after it and never altered
 - Flat proof, or the proof laid on a sample sheet ("On paper")
 - Download as PNG, JPG or PDF
 

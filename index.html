@@ -264,6 +264,8 @@ legend,.lg{padding:0;font:700 1.05rem/1.3 var(--f-head);margin-bottom:12px;displ
 .switch input:checked+.track i{transform:translateX(22px)}
 .switch input:focus-visible+.track{outline:3px solid var(--blue);outline-offset:3px}
 .tones{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.tones.four{grid-template-columns:repeat(4,1fr);gap:8px}
+@media (max-width:520px){.tones.four{grid-template-columns:repeat(2,1fr)}}
 .tone{position:relative}
 .tone input{position:absolute;inset:0;opacity:0;margin:0;width:100%;height:100%;cursor:pointer;z-index:1}
 .tone .face{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 6px 10px;background:var(--white);border:1.5px solid var(--line);border-radius:var(--r-m);height:100%;font-weight:600;font-size:.9rem;
@@ -490,6 +492,11 @@ legend,.lg{padding:0;font:700 1.05rem/1.3 var(--f-head);margin-bottom:12px;displ
             <span class="lab" id="tone-lab">Colour filter</span>
             <div class="tones" id="tones" role="radiogroup" aria-labelledby="tone-lab"></div>
             <p class="hint">Filters change colour only. The PROOF mark is never altered.</p>
+          </div>
+          <div class="field">
+            <span class="lab" id="fin-lab">Stamp finish</span>
+            <div class="tones four" id="finishes" role="radiogroup" aria-labelledby="fin-lab"></div>
+            <p class="hint">Adds the uneven ink, soft edges and tiny gaps of a real stamp impression. Previews and downloads both use it. The PROOF mark is never altered.</p>
           </div>
           <div class="field">
             <span class="lab" id="view-lab">Preview</span>
@@ -747,6 +754,80 @@ function caption(ctx, g){
   setFont(ctx, 34, 600); ctx.fillStyle = '#8a8f9c'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.fillText('PROOF COPY  ·  NOT FOR OFFICIAL USE', g.W/2, g.H - 58);
 }
+/* ═════════════ Stamp finish: the uneven ink of a real impression ═════════════
+   Reshapes the seal's ink only (alpha), after the colour filter and before the PROOF mark. Sizes are in artwork units and
+   the noise is seeded, so the preview and every export show the same impression. */
+const FINISHES = {
+  clean:  { label:'Clean' },
+  fresh:  { label:'Fresh ink',    bleed:.6, rough:.22, base:.97, blotch:.07, holes:.010, press:.06, rim:.22 },
+  rubber: { label:'Rubber stamp', bleed:.7, rough:.40, base:.90, blotch:.20, holes:.050, press:.16, rim:.16 },
+  worn:   { label:'Worn stamp',   bleed:.7, rough:.62, base:.76, blotch:.34, holes:.150, press:.28, rim:.06 }
+};
+const NZ = new Float32Array(65536);
+{ let q = 0x2545f491; for (let i = 0; i < NZ.length; i++){ q = (Math.imul(q, 1664525) + 1013904223) >>> 0; NZ[i] = q / 4294967296; } }
+function vnoise(x, y){
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf*xf*(3 - 2*xf), v = yf*yf*(3 - 2*yf);
+  const x0 = xi & 255, y0 = yi & 255, x1 = (x0 + 1) & 255, y1 = (y0 + 1) & 255;
+  const a = NZ[(y0 << 8) | x0], b = NZ[(y0 << 8) | x1], c = NZ[(y1 << 8) | x0], d = NZ[(y1 << 8) | x1];
+  return a + (b - a)*u + (c - a)*v + (a - b - c + d)*u*v;
+}
+const fbm = (x, y) => .65*vnoise(x, y) + .35*vnoise(x*2.13 + 5.2, y*2.13 + 1.3);
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+const smooth = t => { t = clamp01(t); return t*t*(3 - 2*t); };
+function boxPass(src, dst, w, h, k, vertical){
+  const len = vertical ? h : w, lines = vertical ? w : h, stride = vertical ? w : 1, step = vertical ? 1 : w;
+  const inv = 1/(2*k + 1), last = len - 1;
+  for (let l = 0; l < lines; l++){
+    const base = l*step; let sum = 0;
+    for (let i = -k; i <= k; i++) sum += src[base + (i < 0 ? 0 : i > last ? last : i)*stride];
+    for (let i = 0; i < len; i++){
+      dst[base + i*stride] = sum*inv;
+      const add = i + k + 1 > last ? last : i + k + 1, rem = i - k < 0 ? 0 : i - k;
+      sum += src[base + add*stride] - src[base + rem*stride];
+    }
+  }
+}
+function blurAlpha(src, w, h, r){
+  const k = Math.max(1, Math.round(r)), out = new Float32Array(src.length), t = new Float32Array(src.length);
+  boxPass(src, t, w, h, k, false); boxPass(t, out, w, h, k, true);
+  boxPass(out, t, w, h, k, false); boxPass(t, out, w, h, k, true);
+  return out;
+}
+function applyFinish(ctx, w, h, F, s, g){
+  const img = ctx.getImageData(0, 0, w, h), px = img.data, n = w*h;
+  const a = new Float32Array(n); let sr = 0, sg = 0, sb = 0, sa = 0;
+  for (let i = 0; i < n; i++){
+    const al = px[i*4 + 3]; a[i] = al/255;
+    if (al > 200){ sr += px[i*4]; sg += px[i*4 + 1]; sb += px[i*4 + 2]; sa++; }
+  }
+  if (!sa) return;
+  const ir = sr/sa, ig = sg/sa, ib = sb/sa;
+  const rbT = F.bleed*1.5*s, rbE = Math.max(1, Math.round(Math.max(.8, rbT)));
+  const b = blurAlpha(a, w, h, rbE), rk = Math.min(1, rbT/rbE);       // at small preview sizes the blur cannot get finer, so the ragged edge is eased to match the full-size look
+  const ang = .9, ca = Math.cos(ang), sn = Math.sin(ang);          // the side that was pressed harder
+  for (let y = 0; y < h; y++){
+    const Y = y/s;
+    for (let x = 0; x < w; x++){
+      const i = y*w + x, j = i*4, bv = b[i];
+      if (bv < .02){ px[j + 3] = 0; continue; }
+      const X = x/s;
+      const v = clamp01((bv - .45 + (fbm(X*.55 + 11.3, Y*.55 + 4.7) - .5)*F.rough*rk*1.6)/.3 + .5);   // ragged edge
+      if (v <= 0){ px[j + 3] = 0; continue; }
+      const gr = ((X - g.cx)*ca + (Y - g.cy)*sn)/g.R;                                               // -1..1 across the seal
+      let d = F.base + (fbm(X/60 + 31.7, Y/60 + 8.3) - .5)*2*F.blotch*.7 + (fbm(X/15 + 5.1, Y/15 + 2.9) - .5)*2*F.blotch*.3 - F.press*.5*gr;
+      if (F.holes > 0){
+        const hn = fbm(X/1.5 + 71.1, Y/1.5 + 19.9);
+        d *= 1 - .92*smooth((hn - (.9 - F.holes*1.15))/.06);                                          // tiny gaps where ink did not take
+      }
+      d = clamp01(d);
+      const rim = v < 1 ? 1 - Math.abs(2*v - 1) : 0, dark = 1 - F.rim*(.35 + .65*rim)*.6;           // ink squeezes out darker at the edge
+      px[j] = ir*dark; px[j + 1] = ig*dark; px[j + 2] = ib*dark; px[j + 3] = v*d*255 + .5;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 function draw(canvas, key, st, { scale = 1, proof = true, bg = true } = {}){
   const d = DESIGNS[key], [aw, ah] = d.art, W = aw + 2*M, H = ah + 2*M;
   canvas.width = Math.round(W*scale); canvas.height = Math.round(H*scale);
@@ -761,8 +842,19 @@ function draw(canvas, key, st, { scale = 1, proof = true, bg = true } = {}){
     role: st.role || SAMPLE.role,
     symbols: st.symbols !== 'off'
   };
-  d.draw(ctx, s, g);
-  applyTone(ctx, canvas.width, canvas.height, st.filter || 'original');   // before the PROOF mark, so the mark is never altered
+  const fin = FINISHES[st.finish];
+  if (fin && fin.rough !== undefined){
+    // draw the seal on its own layer so the finish can shape the ink, then lay it on the sheet
+    const layer = document.createElement('canvas'); layer.width = canvas.width; layer.height = canvas.height;
+    const lx = layer.getContext('2d'); lx.setTransform(scale, 0, 0, scale, 0, 0); lx.lineCap = 'round'; lx.lineJoin = 'round';
+    d.draw(lx, s, g);
+    applyTone(lx, layer.width, layer.height, st.filter || 'original');
+    applyFinish(lx, layer.width, layer.height, fin, scale, g);
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(layer, 0, 0); ctx.restore();
+  } else {
+    d.draw(ctx, s, g);
+    applyTone(ctx, canvas.width, canvas.height, st.filter || 'original');   // before the PROOF mark, so the mark is never altered
+  }
   if (proof){ watermark(ctx, g, d); caption(ctx, g); }
   return { W, H };
 }
@@ -834,13 +926,14 @@ function saveBlob(blob, filename){
 }
 
 /* ═════════════ App state ═════════════ */
-const state = { design:'classic', name:'', location:'', role:'Director', ink:'blue', symbols:'on', filter:'original', view:'flat' };
+const state = { design:'classic', name:'', location:'', role:'Director', ink:'blue', symbols:'on', filter:'original', finish:'clean', view:'flat' };
 try { const d = JSON.parse(localStorage.getItem('kk-draft') || 'null'); if (d) for (const k of Object.keys(state)) if (typeof d[k] === 'string') state[k] = d[k]; } catch(e) {}
 if (!DESIGNS[state.design]) state.design = 'classic';
 if (!INKS[state.ink]) state.ink = 'blue';
 if (!['Director','Proprietor'].includes(state.role)) state.role = 'Director';
 if (!['on','off'].includes(state.symbols)) state.symbols = 'on';
 if (!Object.prototype.hasOwnProperty.call(TONES, state.filter)) state.filter = 'original';
+if (!Object.prototype.hasOwnProperty.call(FINISHES, state.finish)) state.finish = 'clean';
 if (!['flat','paper'].includes(state.view)) state.view = 'flat';
 const saveDraft = () => { try { localStorage.setItem('kk-draft', JSON.stringify(state)); } catch(e) {} };
 
@@ -867,6 +960,12 @@ Object.entries(TONES).forEach(([key, t]) => {
   l.innerHTML = `<input type="radio" name="tone" value="${key}"><span class="face"><canvas aria-hidden="true"></canvas><span>${t.label}</span></span>`;
   $('#tones').appendChild(l);
 });
+/* Stamp finish chips */
+Object.entries(FINISHES).forEach(([key, f]) => {
+  const l = document.createElement('label'); l.className = 'tone';
+  l.innerHTML = `<input type="radio" name="finish" value="${key}"><span class="face"><canvas aria-hidden="true"></canvas><span>${f.label}</span></span>`;
+  $('#finishes').appendChild(l);
+});
 /* Landing gallery */
 const gal = $('#gallery');
 Object.entries(DESIGNS).forEach(([key, d], i) => {
@@ -885,6 +984,18 @@ function renderTones(){
   $$('#tones .tone').forEach(c => {
     const key = $('input', c).value;
     draw($('canvas', c), state.design, { ...SAMPLE, ink:state.ink, symbols:state.symbols, filter:key }, { scale:.16*dpr, proof:false });
+  });
+}
+
+/* Finish chips show a close-up of the ink, since the effect is in the detail */
+function renderFinishes(){
+  const d = DESIGNS[state.design], M0 = M, [aw, ah] = d.art, sc = .5, cw = 250, ch = 175;
+  $$('#finishes .tone').forEach(c => {
+    const key = $('input', c).value, tmp = document.createElement('canvas');
+    draw(tmp, state.design, { ...SAMPLE, ink:state.ink, symbols:state.symbols, filter:state.filter, finish:key }, { scale:sc, proof:false });
+    const cv = $('canvas', c); cv.width = Math.round(cw*sc*dpr); cv.height = Math.round(ch*sc*dpr);
+    const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+    cx.drawImage(tmp, (M0 + aw*.06)*sc, (M0 + ah*.08)*sc, cw*sc, ch*sc, 0, 0, cv.width, cv.height);
   });
 }
 
@@ -918,16 +1029,18 @@ function syncUI(){
   $('[data-for=symbols]').hidden = isSign;
   $('#f-symbols').checked = state.symbols !== 'off';
   $$('input[name=tone]').forEach(r => r.checked = r.value === state.filter);
+  $$('input[name=finish]').forEach(r => r.checked = r.value === state.finish);
   $$('input[name=view]').forEach(r => r.checked = r.value === state.view);
   $('#h-name').textContent = isSign ? 'Appears after “For” at the top of the block.' : 'Round seals print this in capitals around the ring.';
-  renderTones(); schedule();
+  renderTones(); renderFinishes(); schedule();
 }
 
 /* Events */
 $('#design-opts').addEventListener('change', e => { if (e.target.name === 'design'){ state.design = e.target.value; clearErr(); saveDraft(); syncUI(); } });
-$('#swatches').addEventListener('change', e => { if (e.target.name === 'ink'){ state.ink = e.target.value; saveDraft(); renderThumbs(); renderTones(); schedule(); } });
-$('#f-symbols').addEventListener('change', e => { state.symbols = e.target.checked ? 'on' : 'off'; saveDraft(); renderTones(); schedule(); });
-$('#tones').addEventListener('change', e => { if (e.target.name === 'tone'){ state.filter = e.target.value; saveDraft(); schedule(); } });
+$('#swatches').addEventListener('change', e => { if (e.target.name === 'ink'){ state.ink = e.target.value; saveDraft(); renderThumbs(); renderTones(); renderFinishes(); schedule(); } });
+$('#f-symbols').addEventListener('change', e => { state.symbols = e.target.checked ? 'on' : 'off'; saveDraft(); renderTones(); renderFinishes(); schedule(); });
+$('#tones').addEventListener('change', e => { if (e.target.name === 'tone'){ state.filter = e.target.value; saveDraft(); renderFinishes(); schedule(); } });
+$('#finishes').addEventListener('change', e => { if (e.target.name === 'finish'){ state.finish = e.target.value; saveDraft(); schedule(); } });
 $$('input[name=view]').forEach(r => r.addEventListener('change', () => { state.view = r.value; saveDraft(); schedule(); }));
 $$('input[name=role]').forEach(r => r.addEventListener('change', () => { state.role = r.value; saveDraft(); schedule(); }));
 fName.addEventListener('input', () => { state.name = fName.value; clearErr('name'); saveDraft(); schedule(); });
